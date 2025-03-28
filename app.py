@@ -4,8 +4,7 @@ import io
 import uuid
 import shutil
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+import google.generativeai as genai  # Correct import
 import pathlib
 import streamlit as st
 from PIL import Image
@@ -69,116 +68,60 @@ def save_binary_file(data, mime_type):
 
 def initialize_gemini_client():
     """Initialize and return the Gemini client"""
-    return genai.Client(
-        api_key=gemini_api_key,
-        http_options={
-            "base_url": 'https://gateway.helicone.ai',
-            "headers": {
-                "helicone-auth": f'Bearer {helicone_api_key}',
-                "helicone-target-url": 'https://generativelanguage.googleapis.com'
-            }
-        }
+    genai.configure(api_key=gemini_api_key)
+    
+    # Create a generation config for text and image generation
+    generation_config = {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 40,
+        "max_output_tokens": 8192,
+    }
+    
+    # Create the model
+    model = genai.GenerativeModel(
+        model_name="gemini-2.0-flash",
+        generation_config=generation_config,
     )
+    
+    return model
 
 def generate_response(prompt, include_images=False):
     """Generate a response from Gemini model"""
-    client = initialize_gemini_client()
-    model = "gemini-2.0-flash-exp"
+    model = initialize_gemini_client()
     
-    # Prepare content parts
-    parts = []
-    
-    # Add all images if this is the first message and we have images
-    if include_images and st.session_state.images and not st.session_state.images_sent:
-        for img_data in st.session_state.images:
-            parts.append(
-                types.Part.from_bytes(
-                    data=img_data["data"],
-                    mime_type="image/jpeg"
-                )
-            )
-        # Mark that we've sent images
-        st.session_state.images_sent = True
-    
-    # Add text prompt
-    parts.append(types.Part.from_text(text=prompt))
-    
-    # Create content
-    contents = [
-        types.Content(
-            role="user",
-            parts=parts,
-        )
-    ]
-    
-    # Add chat history
-    for message in st.session_state.messages:
-        if message["role"] == "user":
-            # For user messages, we only include text after the first message
-            contents.append(
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=message["content"])]
-                )
-            )
-        else:
-            # For model responses, we need to handle both text and images
-            if isinstance(message["content"], str):
-                contents.append(
-                    types.Content(
-                        role="model",
-                        parts=[types.Part.from_text(text=message["content"])]
-                    )
-                )
-            else:
-                # This is an image response
-                contents.append(
-                    types.Content(
-                        role="model",
-                        parts=[
-                            types.Part.from_bytes(
-                                data=message["content"],
-                                mime_type=message["mime_type"]
-                            )
-                        ]
-                    )
-                )
-    
-    # Configure generation
-    generate_content_config = types.GenerateContentConfig(
-        temperature=1,
-        top_p=0.95,
-        top_k=40,
-        max_output_tokens=8192,
-        response_modalities=[
-            "text",
-            "image",
-        ],
-        response_mime_type="text/plain",
-    )
-    
-    # Stream response
-    response_text = ""
-    response_image = None
-    response_mime_type = None
-    
-    for chunk in client.models.generate_content_stream(
-        model=model,
-        contents=contents,
-        config=generate_content_config,
-    ):
-        if not chunk.candidates or not chunk.candidates[0].content or not chunk.candidates[0].content.parts:
-            continue
+    try:
+        # Prepare content
+        content_parts = [prompt]
+        
+        # Add all images if this is the first message and we have images
+        if include_images and st.session_state.images and not st.session_state.images_sent:
+            for img_data in st.session_state.images:
+                # Prepare image for Gemini API
+                image_part = {
+                    "mime_type": "image/jpeg",
+                    "data": img_data["data"]
+                }
+                content_parts.append(image_part)
             
-        if chunk.candidates[0].content.parts[0].inline_data:
-            # This is an image response
-            response_image = chunk.candidates[0].content.parts[0].inline_data.data
-            response_mime_type = chunk.candidates[0].content.parts[0].inline_data.mime_type
-        else:
-            # This is a text response
-            response_text += chunk.text
+            # Mark that we've sent images
+            st.session_state.images_sent = True
+        
+        # Generate response
+        response = model.generate_content(content_parts)
+        
+        # Extract text response
+        response_text = response.text if hasattr(response, 'text') else ""
+        
+        # For now, we're not handling image responses as the current API might not support it
+        response_image = None
+        response_mime_type = None
+        
+        return response_text, response_image, response_mime_type
     
-    return response_text, response_image, response_mime_type
+    except Exception as e:
+        st.error(f"Error generating response: {str(e)}")
+        return f"Error: {str(e)}", None, None
 
 # App UI
 st.title("Gemini Image Chat")
@@ -239,7 +182,7 @@ with st.sidebar:
                 img = Image.open(io.BytesIO(img_data["data"]))
                 
                 # Display image with caption
-                st.image(img, caption=f"{i+1}. {img_data['name']}", use_container_width=True)
+                st.image(img, caption=f"{i+1}. {img_data['name']}")
                 
                 # Remove button
                 if st.button("Remove", key=f"remove_{i}"):
@@ -248,7 +191,6 @@ with st.sidebar:
                     st.session_state.images_sent = False
                     st.rerun()
                 
-    
     # Clear all button
     if st.session_state.images:
         if st.button("Clear All Images"):
@@ -474,12 +416,12 @@ with tab2:
                     else:
                         st.warning("Please enter a prompt for the video.")
             
-            # with cancel_col:
-            #     if st.button("Cancel", key="cancel_video_btn"):
-            #         st.session_state.video_generation_state["selected_image_idx"] = None
-            #         st.session_state.video_generation_state["prompt"] = ""
-            #         st.session_state.video_generation_state["generating"] = False
-            #         st.rerun()
+            with cancel_col:
+                if st.button("Cancel", key="cancel_video_btn"):
+                    st.session_state.video_generation_state["selected_image_idx"] = None
+                    st.session_state.video_generation_state["prompt"] = ""
+                    st.session_state.video_generation_state["generating"] = False
+                    st.rerun()
             
             # Display the generated video if available
             if st.session_state.video_generation_state["video_path"]:
@@ -513,4 +455,4 @@ with tab2:
                     st.session_state.video_generation_state["selected_image_idx"] = None
                     st.session_state.video_generation_state["prompt"] = ""
                     st.session_state.video_generation_state["video_path"] = None
-                    st.rerun() 
+                    st.rerun()
