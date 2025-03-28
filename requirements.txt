@@ -1,6 +1,5 @@
-streamlit==1.32.0
+streamlit
 google-generativeai
-python-dotenv==1.0.1
-Pillow==10.2.0
-uuid==1.30
-replicate==0.22.0 
+python-dotenv
+uuid
+replicate
